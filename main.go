@@ -17,16 +17,14 @@ func DebounceFirst(circuit Circuit, d time.Duration) Circuit {
 	var m sync.Mutex
 	return func(ctx context.Context) int {
 		m.Lock()
+		defer m.Unlock()
 
-		defer func() {
-			threshold = time.Now().Add(d)
-			m.Unlock()
-		}()
 		if time.Now().Before(threshold) {
 			fmt.Println("Return cached result")
 			return result
 		}
 		result = circuit(ctx)
+		threshold = time.Now().Add(d)
 		return result
 	}
 }
@@ -38,7 +36,7 @@ func IncrementFunc(ctx context.Context) int {
 
 func main() {
 	tries := 20
-	delay := 200 * time.Millisecond
+	delay := 1 * time.Second
 
 	debouncer := DebounceFirst(IncrementFunc, delay)
 	fmt.Println("With debouncer:")
