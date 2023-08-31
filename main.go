@@ -17,14 +17,60 @@ func DebounceFirst(circuit Circuit, d time.Duration) Circuit {
 	var m sync.Mutex
 	return func(ctx context.Context) int {
 		m.Lock()
-		defer m.Unlock()
+		defer func() {
+			threshold = time.Now().Add(d)
+			m.Unlock()
+		}()
 
 		if time.Now().Before(threshold) {
 			fmt.Println("Return cached result")
 			return result
 		}
 		result = circuit(ctx)
+		return result
+	}
+}
+
+func DebounceLast(circuit Circuit, d time.Duration) Circuit {
+	var threshold time.Time = time.Now()
+	var ticker *time.Ticker
+	var result int
+	var once sync.Once
+	var m sync.Mutex
+	return func(ctx context.Context) int {
+		m.Lock()
+		defer m.Unlock()
 		threshold = time.Now().Add(d)
+
+		once.Do(func() {
+			ticker = time.NewTicker(time.Millisecond * 100)
+
+			go func() {
+				defer func() {
+					m.Lock()
+					ticker.Stop()
+					once = sync.Once{}
+					m.Unlock()
+				}()
+				for {
+					select {
+					case <-ticker.C:
+						m.Lock()
+						if time.Now().After(threshold) {
+							result = circuit(ctx)
+							m.Unlock()
+							return
+						}
+						m.Unlock()
+					case <-ctx.Done():
+						m.Lock()
+						result = 0
+						m.Unlock()
+						return
+					}
+				}
+			}()
+		})
 		return result
 	}
 }
