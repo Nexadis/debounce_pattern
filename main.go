@@ -44,6 +44,48 @@ func EmulateRetry(ctx context.Context) (int, error) {
 	return attempts, nil
 }
 
+func Throttle(e Effector, max uint, refill uint, d time.Duration) Effector {
+	tokens := max
+	var once sync.Once
+
+	return func(ctx context.Context) (int, error) {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		once.Do(func() {
+			ticker := time.NewTicker(d)
+
+			go func() {
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-ctx.Done():
+						return
+
+					case <-ticker.C:
+						t := tokens + refill
+						if t > max {
+							t = max
+						}
+						tokens = t
+					}
+				}
+			}()
+		})
+		if tokens <= 0 {
+			return 0, errors.New("too many calls")
+		}
+		tokens--
+		return e(ctx)
+	}
+}
+
+func EmulateThrottle(ctx context.Context) (int, error) {
+	i++
+	return i, nil
+}
+
 func DebounceFirst(circuit Circuit, d time.Duration) Circuit {
 	var threshold time.Time
 	var result int
@@ -113,8 +155,9 @@ func IncrementFunc(ctx context.Context) int {
 }
 
 func main() {
+	border("[ Debounce pattern ]")
 	tries := 6
-	delay := 1 * time.Second
+	delay := 100 * time.Millisecond
 
 	debouncer := DebounceFirst(IncrementFunc, delay)
 	fmt.Println("With debouncer:")
@@ -122,9 +165,9 @@ func main() {
 		res := debouncer(context.Background())
 		fmt.Printf("\t[%d] i=%d\n", i, res)
 		if i%2 == 0 {
-			time.Sleep(250 * time.Millisecond)
+			time.Sleep(delay + 50*time.Millisecond)
 		} else {
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(delay - 50*time.Millisecond)
 		}
 	}
 	i = 0
@@ -134,10 +177,35 @@ func main() {
 		fmt.Printf("\t[%d] i=%d\n", i, res)
 		time.Sleep(250 * time.Millisecond)
 	}
-
+	border("[ Retry pattern ]")
 	retrier := Retry(EmulateRetry, 5, 200*time.Millisecond)
 	_, err := retrier(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
+	border("[ Throttle pattern ]")
+
+	throttler := Throttle(EmulateThrottle, 5, 1, delay)
+
+	for j := 0; j < 20; j++ {
+		time.Sleep(delay / 2)
+		val, err := throttler(context.Background())
+		if err != nil {
+			fmt.Printf("Err: %v\n", err)
+			continue
+		}
+		fmt.Printf("[%d] val=%d\n", j, val)
+	}
+}
+
+func border(msg string) {
+	for i := 0; i < 80; i++ {
+		fmt.Print("-")
+	}
+	fmt.Println()
+	fmt.Println(msg)
+	for i := 0; i < 80; i++ {
+		fmt.Print("-")
+	}
+	fmt.Println()
 }
