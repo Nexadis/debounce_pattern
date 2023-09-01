@@ -2,14 +2,47 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
 
-var i int
+var (
+	i        int
+	attempts int
+)
 
-type Circuit func(ctx context.Context) int
+type (
+	Circuit  func(ctx context.Context) int
+	Effector func(ctx context.Context) (int, error)
+)
+
+func Retry(effector Effector, retries int, delay time.Duration) Effector {
+	return func(ctx context.Context) (int, error) {
+		for r := 0; ; r++ {
+			response, err := effector(ctx)
+			if err == nil || r >= retries {
+				return response, err
+			}
+			log.Printf("Attempt %d failed; retrying in %v", r+1, delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+	}
+}
+
+func EmulateRetry(ctx context.Context) (int, error) {
+	attempts++
+	if attempts <= 3 {
+		return 0, errors.New("service unavailable")
+	}
+	return attempts, nil
+}
 
 func DebounceFirst(circuit Circuit, d time.Duration) Circuit {
 	var threshold time.Time
@@ -23,7 +56,6 @@ func DebounceFirst(circuit Circuit, d time.Duration) Circuit {
 		}()
 
 		if time.Now().Before(threshold) {
-			fmt.Println("Return cached result")
 			return result
 		}
 		result = circuit(ctx)
@@ -81,7 +113,7 @@ func IncrementFunc(ctx context.Context) int {
 }
 
 func main() {
-	tries := 20
+	tries := 6
 	delay := 1 * time.Second
 
 	debouncer := DebounceFirst(IncrementFunc, delay)
@@ -101,5 +133,11 @@ func main() {
 		res := IncrementFunc(context.Background())
 		fmt.Printf("\t[%d] i=%d\n", i, res)
 		time.Sleep(250 * time.Millisecond)
+	}
+
+	retrier := Retry(EmulateRetry, 5, 200*time.Millisecond)
+	_, err := retrier(context.Background())
+	if err != nil {
+		log.Fatal(err)
 	}
 }
