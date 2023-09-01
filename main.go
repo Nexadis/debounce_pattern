@@ -15,8 +15,10 @@ var (
 )
 
 type (
-	Circuit  func(ctx context.Context) int
-	Effector func(ctx context.Context) (int, error)
+	Circuit     func(ctx context.Context) int
+	Effector    func(ctx context.Context) (int, error)
+	WithContext func(ctx context.Context, arg int) (int, error)
+	SlowFunc    func(arg int) (int, error)
 )
 
 func Retry(effector Effector, retries int, delay time.Duration) Effector {
@@ -84,6 +86,30 @@ func Throttle(e Effector, max uint, refill uint, d time.Duration) Effector {
 func EmulateThrottle(ctx context.Context) (int, error) {
 	i++
 	return i, nil
+}
+
+func Timeout(f SlowFunc) WithContext {
+	return func(ctx context.Context, arg int) (int, error) {
+		chres := make(chan int)
+		cherr := make(chan error)
+
+		go func() {
+			res, err := f(arg)
+			chres <- res
+			cherr <- err
+		}()
+		select {
+		case res := <-chres:
+			return res, <-cherr
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+}
+
+func SlowFunction(value int) (int, error) {
+	time.Sleep(time.Duration(value) * time.Millisecond)
+	return value + 1, nil
 }
 
 func DebounceFirst(circuit Circuit, d time.Duration) Circuit {
@@ -195,6 +221,21 @@ func main() {
 			continue
 		}
 		fmt.Printf("[%d] val=%d\n", j, val)
+	}
+
+	border("[ Timeout Wrap ]")
+
+	f := Timeout(SlowFunction)
+	for i := 0; i < 5; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*250)
+		defer cancel()
+		val, err := f(ctx, i*100)
+		if err != nil {
+			fmt.Printf("Err: %v\n", err)
+			continue
+		}
+		fmt.Printf("[%d] val=%d\n", i, val)
+
 	}
 }
 
